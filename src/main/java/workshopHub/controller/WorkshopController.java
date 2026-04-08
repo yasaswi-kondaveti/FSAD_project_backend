@@ -2,11 +2,18 @@ package workshopHub.controller;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import workshopHub.entity.User;
 import workshopHub.entity.Workshop;
 import workshopHub.repository.UserRepository;
 import workshopHub.repository.WorkshopRepository;
+import workshopHub.service.FileStorageService;
+import workshopHub.service.CertificateService;
 import java.util.List;
+import java.util.ArrayList;
 
 @RestController
 @RequestMapping("/api/workshops")
@@ -18,6 +25,12 @@ public class WorkshopController {
 
     @Autowired
     private UserRepository userRepo;
+
+    @Autowired
+    private FileStorageService fileService;
+
+    @Autowired
+    private CertificateService certService;
 
     @GetMapping
     public List<Workshop> getAll() {
@@ -42,6 +55,10 @@ public class WorkshopController {
         existing.setLevel(newWorkshopData.getLevel());
         existing.setCapacity(newWorkshopData.getCapacity());
         existing.setDescription(newWorkshopData.getDescription());
+        
+        if (newWorkshopData.getStatus() != null) {
+            existing.setStatus(newWorkshopData.getStatus());
+        }
         
         // Persist color/thumbnail if provided or fallback
         if(newWorkshopData.getThumbnail() != null) existing.setThumbnail(newWorkshopData.getThumbnail());
@@ -85,5 +102,58 @@ public class WorkshopController {
         }
         
         return userRepo.save(user);
+    }
+
+    // Get all users registered for this workshop
+    @GetMapping("/{id}/roster")
+    public List<User> getWorkshopRoster(@PathVariable Long id) {
+        return userRepo.findByRegisteredWorkshopsId(id);
+    }
+
+    @GetMapping("/{id}/certificate")
+    public ResponseEntity<byte[]> downloadCertificate(@PathVariable Long id, @RequestParam Long userId) {
+        User user = userRepo.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
+        Workshop workshop = workshopRepo.findById(id).orElseThrow(() -> new RuntimeException("Workshop not found"));
+        
+        try {
+            byte[] pdfBytes = certService.generateCertificate(user.getName(), workshop.getTitle());
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_PDF);
+            String filename = "Certificate_" + (workshop.getTitle() == null ? "Workshop" : workshop.getTitle().replaceAll(" ", "_")) + ".pdf";
+            headers.setContentDispositionFormData("attachment", filename);
+            return ResponseEntity.ok().headers(headers).body(pdfBytes);
+        } catch (Throwable e) {
+            java.io.StringWriter sw = new java.io.StringWriter();
+            e.printStackTrace(new java.io.PrintWriter(sw));
+            return ResponseEntity.status(500).body(sw.toString().getBytes());
+        }
+    }
+
+    @PostMapping("/{id}/materials")
+    public Workshop uploadMaterial(@PathVariable Long id, @RequestParam("file") MultipartFile file) {
+        Workshop w = workshopRepo.findById(id).orElseThrow(() -> new RuntimeException("Workshop not found"));
+        String uniqueName = fileService.storeFile(file);
+        
+        List<String> materials = w.getMaterials();
+        if (materials == null) materials = new ArrayList<>();
+        
+        if (!materials.contains(uniqueName)) {
+            materials.add(uniqueName);
+            w.setMaterials(materials);
+            workshopRepo.save(w);
+        }
+        return w;
+    }
+
+    @DeleteMapping("/{id}/materials/{fileName:.+}")
+    public Workshop removeMaterial(@PathVariable Long id, @PathVariable String fileName) {
+        Workshop w = workshopRepo.findById(id).orElseThrow(() -> new RuntimeException("Workshop not found"));
+        List<String> materials = w.getMaterials();
+        if (materials != null && materials.contains(fileName)) {
+            materials.remove(fileName);
+            w.setMaterials(materials);
+            workshopRepo.save(w);
+        }
+        return w;
     }
 }
